@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+out/
+*.xlsx
+*.xlsm
+*.xls
+.env
+*.bak
