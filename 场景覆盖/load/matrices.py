@@ -89,19 +89,18 @@ def _is_title_row(val):
 
 
 def read_all_matrices(wb):
-    """读取克制矩阵 Sheet 中的 PVE/PVP 属性/体型克制矩阵。"""
+    """读取克制矩阵。表上是一套元素克制、一套体型克制，PVE 与 PVP 共用。"""
     ws = wb[cfg.MATRIX_SHEET]
-    keywords = ["PVE属性克制", "PVP属性克制", "PVE体型克制", "PVP体型克制"]
-    starts = _find_all_keyword_cells(ws, keywords)
+    starts = _find_all_keyword_cells(ws, ["元素克制", "体型克制"])
     cfg.qprint(f"{cfg.PRINT_PREFIX_READ} 矩阵读取")
 
-    matrices = {}
+    parsed = {}
     for keyword, (title_row, title_col) in starts.items():
         header_row = title_row + 1
         data_start_row = header_row + 1
         data_value_col_start = title_col + 1
 
-        if "体型" in keyword:
+        if keyword == "体型克制":
             size_list = _extract_size_cols(ws, header_row, start_col=data_value_col_start)
             weapon_list = []
             matrix = {}
@@ -125,9 +124,8 @@ def read_all_matrices(wb):
                             matrix[(weapon, sz)] = float(val)
                         except ValueError:
                             pass
-            cfg.qprint(f"  {cfg.PRINT_PREFIX_MATRIX_MERGE} {keyword}: "
-                       f"{len(weapon_list)} 武器 (独立, 不合并)")
-            matrices[keyword] = (weapon_list, size_list, matrix)
+            cfg.qprint(f"  {cfg.PRINT_PREFIX_MATRIX_MERGE} {keyword}: {len(weapon_list)} 武器")
+            parsed[keyword] = (weapon_list, size_list, matrix)
         else:
             attr_list = _extract_attr_cols(ws, header_row, start_col=data_value_col_start)
             if len(attr_list) < 10:
@@ -156,5 +154,10 @@ def read_all_matrices(wb):
                             matrix[(atk, defe)] = float(val)
                         except ValueError:
                             pass
-            matrices[keyword] = (attr_list, matrix)
-    return matrices
+            parsed[keyword] = (attr_list, matrix)
+    return {
+        "PVE属性克制": parsed["元素克制"],
+        "PVP属性克制": parsed["元素克制"],
+        "PVE体型克制": parsed["体型克制"],
+        "PVP体型克制": parsed["体型克制"],
+    }

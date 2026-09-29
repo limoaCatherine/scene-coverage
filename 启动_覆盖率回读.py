@@ -1,14 +1,18 @@
-
-def _publish_out(name: str):
-    from pathlib import Path
-    dest = Path(__file__).resolve().parents[0] / "out" / name
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    return dest
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """回读覆盖率沙盒：只核看板有数，不改正式簿。"""
+
 from __future__ import annotations
+
+
+def _publish_out(name: str):
+    from pathlib import Path
+    p = Path(__file__).resolve().parent
+    while p != p.parent and not (p / ".git").is_dir():
+        p = p.parent
+    dest = p / "out" / name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return dest
 
 import io
 import json
@@ -32,7 +36,6 @@ for _name in _SIBLING_REPOS:
         sys.path.insert(0, str(_p))
 
 SANDBOX = _publish_out("sandbox-覆盖率结果.xlsx")
-
 
 def main(argv: Optional[list[str]] = None) -> int:
     del argv
@@ -76,7 +79,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     print(json.dumps({"数字格": nums, "R1": titles[:6], "写出": str(dest)}, ensure_ascii=False))
     return 0 if nums else 5
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

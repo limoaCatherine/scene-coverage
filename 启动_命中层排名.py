@@ -1,14 +1,18 @@
-
-def _publish_out(name: str):
-    from pathlib import Path
-    dest = Path(__file__).resolve().parents[0] / "out" / name
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    return dest
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """命中层相对均值：解释器最终伤害，不发明 PASS 带。"""
+
 from __future__ import annotations
+
+
+def _publish_out(name: str):
+    from pathlib import Path
+    p = Path(__file__).resolve().parent
+    while p != p.parent and not (p / ".git").is_dir():
+        p = p.parent
+    dest = p / "out" / name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return dest
 
 import io
 import json
@@ -31,7 +35,6 @@ for _name in _SIBLING_REPOS:
     if _p.is_dir() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-
 def main(argv: Optional[list[str]] = None) -> int:
     del argv
     from 场景覆盖.calc.sim_bridge import 流派对木桩命中
@@ -44,7 +47,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     top = (rank.get("排序") or [{}])[0]
     print(json.dumps({"均值": rank.get("均值最终伤害"), "第一": top, "写出": str(dest)}, ensure_ascii=False))
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

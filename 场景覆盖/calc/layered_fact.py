@@ -8,6 +8,7 @@ import numpy as np
 
 from 场景覆盖 import config as cfg
 from 场景覆盖.calc.matrix_ops import atk_utility_vec, expected_util, to_ndarray
+from 场景覆盖.load.layout_v2 import _maps_by_play, active_tier
 
 
 def _bfi(atk: float, deff: float, avg_atk: float, avg_def: float) -> float:
@@ -62,68 +63,90 @@ def calc_layered_facts(
         mat_attr_pvp = to_ndarray(mat_attr_pvp, attr_types, attr_types)
     prefs = scene["prefs"]["prefs"]
     facts = []
-    by_lv = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0}))
-    by_play = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0}))
-    by_mode = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0}))
+    by_lv = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0, "tw": 0.0, "tu": 0.0}))
+    by_play = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0, "tw": 0.0, "tu": 0.0}))
+    by_mode = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0, "tw": 0.0, "tu": 0.0}))
+    by_map_raw = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0, "tw": 0.0, "tu": 0.0}))
+
+    levels_blk = scene["levels_blk"]
+    shares = scene["play"]["shares"]
+    play_meta = {p["name"]: p for p in scene["play"]["playways"]}
+    by_pw = _maps_by_play(scene["maps_enc"])
+    encounters = scene["maps_enc"]["encounters"]
+    share_sum = {lv: sum(shares[n][lv] for n in plays) for lv in range(1, 61)}
 
     for lv in range(1, 61):
-        for mode in ("PVE", "PVP"):
-            mat = mat_attr_pve if mode == "PVE" else mat_attr_pvp
-            atk_map, def_map, keys = {}, {}, []
-            for play in plays:
-                monster = None
-                if mode == "PVE":
-                    env = playway_pve_env(scene["pve_config"], lv, play, n_a, n_r, n_s)
-                    if env is not None:
-                        monster = env["attr"]
-                elif play in prefs:
+        denom = share_sum[lv]
+        if denom <= 0:
+            continue
+        for play in plays:
+            meta = play_meta[play]
+            share = shares[play][lv]
+            if share <= 0 or play not in prefs:
+                continue
+            tier = active_tier(by_pw.get(play) or [], lv)
+            if not tier:
+                continue
+            base_v = levels_blk["value"][lv] * share / denom
+            base_t = levels_blk["time"][lv] * share / denom
+            for mode, pct in (("PVE", meta["pve"]), ("PVP", meta["pvp"])):
+                if pct <= 0:
+                    continue
+                mat = mat_attr_pve if mode == "PVE" else mat_attr_pvp
+                opp = None
+                if mode == "PVP":
                     acc = np.zeros(n_a)
                     for b, p in prefs[play].items():
                         if b in build_attr:
                             acc += p * build_attr[b]
                     if acc.sum() > 0:
-                        monster = acc / acc.sum()
-                for b in builds:
-                    key = (lv, mode, play, b)
-                    keys.append(key)
-                    if monster is None:
-                        atk_map[key] = None
-                        def_map[key] = None
+                        opp = acc / acc.sum()
+                for m, frac in tier:
+                    monster = opp
+                    if mode == "PVE":
+                        enc = encounters.get(m["name"])
+                        if enc is None:
+                            continue
+                        monster = np.asarray(enc["attr"], dtype=float)
+                    if monster is None or float(np.asarray(monster).sum()) <= 0:
                         continue
                     atk_v = atk_utility_vec(monster, mat)
-                    atk_map[key] = float(build_attr[b] @ atk_v)
-                    def_map[key] = expected_util(monster, build_attr[b], mat)
-            if not keys:
-                continue
-            valid = [k for k in keys if atk_map[k] is not None and def_map[k] is not None]
-            avg_atk = sum(atk_map[k] for k in valid) / len(valid) if valid else 0
-            avg_def = sum(def_map[k] for k in valid) / len(valid) if valid else 0
-            for key in keys:
-                lv_, mode_, play, b = key
-                wv, wt = cube[key]
-                if atk_map[key] is None or not valid:
-                    bfi = None
-                else:
-                    bfi = _bfi(atk_map[key], def_map[key], avg_atk, avg_def)
-                rec = {
-                    "等级": lv_,
-                    "模式": mode_,
-                    "玩法": play,
-                    "流派": b,
-                    "价值权重": wv,
-                    "时长权重": wt,
-                    "输出乘区": atk_map[key],
-                    "承伤乘区": def_map[key],
-                    "平衡指数": bfi,
-                    "体验占位": None,
-                }
-                facts.append(rec)
-                if atk_map[key] is None:
-                    continue
-                for bucket in (by_lv[lv_][b], by_play[play][b], by_mode[mode_][b]):
-                    bucket["atk"] += atk_map[key] * wv
-                    bucket["defn"] += def_map[key] * wv
-                    bucket["w"] += wv
+                    for b in builds:
+                        pref = prefs[play].get(b, 0.0)
+                        if pref <= 0:
+                            continue
+                        wv = base_v * pct * frac * pref
+                        wt = base_t * pct * frac * pref
+                        if wv + wt <= cfg.PROGRAM_EPS:
+                            continue
+                        atk = float(build_attr[b] @ atk_v)
+                        deff = expected_util(monster, build_attr[b], mat)
+                        rec = {
+                            "等级": lv,
+                            "模式": mode,
+                            "玩法": play,
+                            "地图": m["name"],
+                            "流派": b,
+                            "价值权重": wv,
+                            "时长权重": wt,
+                            "克制效用": atk,
+                            "收益效用": wv * atk,
+                            "时间效用": wt * atk,
+                            "输出乘区": atk,
+                            "承伤乘区": deff,
+                        }
+                        facts.append(rec)
+                        for bucket, dim in (
+                            (by_lv[lv][b], None),
+                            (by_play[play][b], None),
+                            (by_mode[mode][b], None),
+                            (by_map_raw[m["name"]][b], None),
+                        ):
+                            bucket["atk"] += atk * wv
+                            bucket["defn"] += deff * wv
+                            bucket["w"] += wv
+                            bucket["tw"] += wt
+                            bucket["tu"] += wt * atk
 
     def _roll(store):
         out = {}
@@ -136,6 +159,9 @@ def calc_layered_facts(
                     "输出乘区": d["atk"] / d["w"],
                     "承伤乘区": d["defn"] / d["w"],
                     "价值权重": d["w"],
+                    "时长权重": d.get("tw", 0.0),
+                    "时间效用": d.get("tu", 0.0),
+                    "收益效用": d["atk"],
                 }
             if not out[dim]:
                 continue
@@ -145,31 +171,9 @@ def calc_layered_facts(
                 v["平衡指数"] = _bfi(v["输出乘区"], v["承伤乘区"], aa, ad)
         return out
 
-    maps_enc = scene.get("maps_enc") or {}
-    maps = maps_enc.get("maps") or []
-    encounters = maps_enc.get("encounters") or {}
-    by_map_raw = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0}))
-    map_meta = {}
-    for m in maps:
-        name = m["name"]
-        play = m["playway"]
-        lv = int(m["level"])
-        enc = encounters.get(name)
-        map_meta[name] = {"玩法": play, "等级": lv}
-        if enc is None:
-            continue
-        monster = np.asarray(enc["attr"], dtype=float)
-        if monster.sum() <= 0:
-            continue
-        atk_v = atk_utility_vec(monster, mat_attr_pve)
-        for b in builds:
-            atk = float(build_attr[b] @ atk_v)
-            deff = expected_util(monster, build_attr[b], mat_attr_pve)
-            wv = cube.get((lv, "PVE", play, b), (0.0, 0.0))[0]
-            bucket = by_map_raw[name][b]
-            bucket["atk"] += atk * max(wv, 1.0)
-            bucket["defn"] += deff * max(wv, 1.0)
-            bucket["w"] += max(wv, 1.0)
+    maps = scene["maps_enc"]["maps"]
+    encounters = scene["maps_enc"]["encounters"]
+    map_meta = {m["name"]: {"玩法": m["playway"], "等级": int(m["level"])} for m in maps}
 
     # 三维：元素=克制矩阵；体型=武器×体型矩阵；种族无矩阵则只出环境占比+流派三维权重
     by_elem_raw = defaultdict(lambda: defaultdict(lambda: {"atk": 0.0, "defn": 0.0, "w": 0.0}))

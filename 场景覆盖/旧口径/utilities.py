@@ -7,7 +7,7 @@ import numpy as np
 
 from 场景覆盖 import config as cfg
 from .env import EnvBundle, env_dist
-from .matrix_ops import atk_utility_vec, def_hit_vec, expected_util
+from 场景覆盖.calc.matrix_ops import atk_utility_vec, def_hit_vec, expected_util
 
 
 def _mix_scalar(pve: float, pvp: float, beta_pve: float, beta_pvp: float) -> float:

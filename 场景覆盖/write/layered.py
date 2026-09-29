@@ -14,6 +14,17 @@ NUM = "0.000000;-0.000000;0.000000"
 PCT = "0.00%;-0.00%;0.00%"
 FILL_L0 = PatternFill("solid", fgColor="F2F2F2")
 FILL_L1 = PatternFill("solid", fgColor="E7E6E6")
+FILL_OK = PatternFill("solid", fgColor="C6EFCE")
+FILL_WATCH = PatternFill("solid", fgColor="FFEB9C")
+FILL_HIGH = PatternFill("solid", fgColor="F8CBAD")
+FILL_LOW = PatternFill("solid", fgColor="F4B183")
+BAND_OK = 0.03
+BAND_WATCH = 0.08
+FILL_PVE = PatternFill("solid", fgColor="DEEBF7")
+FILL_PVP = PatternFill("solid", fgColor="FCE4D6")
+BLOCK_COLORS = (
+    "1F4E79", "2E75B6", "548235", "C65911", "7030A0", "833C0C", "1F4E79", "2E75B6",
+)
 FILL_L3 = PatternFill("solid", fgColor="D9D9D9")
 FONT_L0 = Font(name=FONT, size=14, bold=True, color="1F4E79")
 FONT_L1 = Font(name=FONT, size=12, bold=True, color="1F4E79")
@@ -29,11 +40,15 @@ def _dest(framework_path: str) -> str:
     return path
 
 
-def _paint_l1(ws, r, c0, c1, title):
+def _paint_l1(ws, r, c0, c1, title, color="1F4E79"):
+    fill = PatternFill("solid", fgColor=color)
+    font = Font(name=FONT, size=12, bold=True, color="FFFFFF")
     for c in range(c0, c1 + 1):
-        ws.cell(r, c).fill = FILL_L1
-        ws.cell(r, c).alignment = AL
-    ws.cell(r, c0, title).font = FONT_L1
+        cell = ws.cell(r, c)
+        cell.fill = fill
+        cell.font = font
+        cell.alignment = AL
+    ws.cell(r, c0, title)
 
 
 def _hdr(ws, r, c, text):
@@ -110,7 +125,7 @@ def write_layered(framework_path: str, rankings: dict, layered: dict, meta_note:
     maps = list(map_meta.keys()) or list(by_map.keys())
 
     w_build = n * 3
-    c_board, w_board = 1, 5
+    c_board, w_board = 1, 13
     c_lv = c_board + w_board + 1
     w_lv = 1 + w_build
     c_play = c_lv + w_lv + 1
@@ -128,7 +143,7 @@ def write_layered(framework_path: str, rankings: dict, layered: dict, meta_note:
     used = c_elem + w_elem - 1
 
     blocks = [
-        (c_board, c_board + w_board - 1, "看板·综合"),
+        (c_board, c_board + w_board - 1, "平衡总览"),
         (c_lv, c_lv + w_lv - 1, "分等级"),
         (c_play, c_play + w_play - 1, "分玩法"),
         (c_mode, c_mode + w_mode - 1, "分模式"),
@@ -144,22 +159,69 @@ def write_layered(framework_path: str, rankings: dict, layered: dict, meta_note:
     ws.row_dimensions[1].height = 20
     ws.row_dimensions[2].height = 8
 
-    for c0, c1, title in blocks:
-        _paint_l1(ws, 3, c0, c1, title)
+    for i, (c0, c1, title) in enumerate(blocks):
+        _paint_l1(ws, 3, c0, c1, title, BLOCK_COLORS[i % len(BLOCK_COLORS)])
 
-    for i, h in enumerate(("流派", "输出乘区", "承伤乘区", "平衡指数", "价值权重")):
+    headers = (
+        "流派", "输出乘区", "承伤乘区", "平衡指数", "价值权重", "时长权重", "时间效用",
+        "PVE指数", "PVP指数", "偏离", "判定", "最偏玩法", "玩法偏离",
+    )
+    for i, h in enumerate(headers):
         _hdr(ws, 4, c_board + i, h)
         _hdr(ws, 5, c_board + i, "")
     mode_pve = by_mode.get("PVE", {})
     mode_pvp = by_mode.get("PVP", {})
+    overall = {}
+    for b in builds:
+        a, q = mode_pve.get(b, {}), mode_pvp.get(b, {})
+        wv = (a.get("价值权重") or 0) + (q.get("价值权重") or 0)
+        if wv <= 0:
+            continue
+        atk = ((a.get("输出乘区") or 0) * (a.get("价值权重") or 0) + (q.get("输出乘区") or 0) * (q.get("价值权重") or 0)) / wv
+        deff = ((a.get("承伤乘区") or 0) * (a.get("价值权重") or 0) + (q.get("承伤乘区") or 0) * (q.get("价值权重") or 0)) / wv
+        overall[b] = {"atk": atk, "def": deff, "wv": wv, "a": a, "q": q}
+    avg_atk = sum(v["atk"] for v in overall.values()) / len(overall)
+    avg_def = sum(v["def"] for v in overall.values()) / len(overall)
     for i, b in enumerate(builds):
         r = 6 + i
-        a, q = mode_pve.get(b, {}), mode_pvp.get(b, {})
+        o = overall.get(b)
+        if not o:
+            _txt(ws, r, c_board, b)
+            continue
+        bfi = (o["atk"] / avg_atk) * (avg_def / o["def"])
+        drift = bfi - 1
+        if abs(drift) <= BAND_OK:
+            verdict, fill = "合理", FILL_OK
+        elif abs(drift) <= BAND_WATCH:
+            verdict, fill = ("偏强" if drift > 0 else "偏弱"), FILL_WATCH
+        else:
+            verdict, fill = ("过强" if drift > 0 else "过弱"), FILL_HIGH if drift > 0 else FILL_LOW
+        worst_name, worst_drift = "", 0.0
+        for play, brow in by_play.items():
+            rec = brow.get(b) or {}
+            idx = rec.get("平衡指数")
+            if idx is None:
+                continue
+            d = idx - 1
+            if abs(d) > abs(worst_drift):
+                worst_name, worst_drift = play, d
+        a, q = o["a"], o["q"]
         _txt(ws, r, c_board, b)
-        _num(ws, r, c_board + 1, _avg(a.get("输出乘区"), q.get("输出乘区")))
-        _num(ws, r, c_board + 2, _avg(a.get("承伤乘区"), q.get("承伤乘区")))
-        _num(ws, r, c_board + 3, _avg(a.get("平衡指数"), q.get("平衡指数")))
-        _num(ws, r, c_board + 4, (a.get("价值权重") or 0) + (q.get("价值权重") or 0))
+        _num(ws, r, c_board + 1, o["atk"])
+        _num(ws, r, c_board + 2, o["def"])
+        _num(ws, r, c_board + 3, bfi)
+        _num(ws, r, c_board + 4, o["wv"])
+        _num(ws, r, c_board + 5, (a.get("时长权重") or 0) + (q.get("时长权重") or 0))
+        _num(ws, r, c_board + 6, (a.get("时间效用") or 0) + (q.get("时间效用") or 0))
+        _num(ws, r, c_board + 7, a.get("平衡指数"))
+        _num(ws, r, c_board + 8, q.get("平衡指数"))
+        _num(ws, r, c_board + 9, drift, "0.00%")
+        cell = ws.cell(r, c_board + 10, verdict)
+        cell.font = FONT_TXT
+        cell.fill = fill
+        cell.alignment = AL
+        _txt(ws, r, c_board + 11, worst_name)
+        _num(ws, r, c_board + 12, worst_drift, "0.00%")
 
     def _keys_block(c0, key_h, keys, store, extra_hdr=(), extra_fn=None, key_fmt=None):
         _hdr(ws, 4, c0, key_h)
@@ -236,10 +298,38 @@ def write_layered(framework_path: str, rankings: dict, layered: dict, meta_note:
 
     _keys_block(c_elem, "元素", attr_types, by_elem)
 
+    fact_col = used + 2
+    _paint_l1(ws, 3, fact_col, fact_col + 9, "地图流派", "0F2744")
+    headers = ("等级", "模式", "玩法", "地图", "流派", "价值权重", "时长权重", "克制效用", "收益效用", "时间效用")
+    for j, h in enumerate(headers):
+        _hdr(ws, 4, fact_col + j, h)
+    facts = layered.get("facts") or []
+    for i, rec in enumerate(facts):
+        rr = 5 + i
+        fill = FILL_PVP if rec["模式"] == "PVP" else FILL_PVE
+        vals = (
+            rec["等级"], rec["模式"], rec["玩法"], rec["地图"], rec["流派"],
+            rec["价值权重"], rec["时长权重"], rec["克制效用"], rec["收益效用"], rec["时间效用"],
+        )
+        for j, v in enumerate(vals):
+            if j < 5:
+                _txt(ws, rr, fact_col + j, v)
+            else:
+                _num(ws, rr, fact_col + j, v)
+            ws.cell(rr, fact_col + j).fill = fill
+
     for c in range(1, used + 1):
         ws.column_dimensions[get_column_letter(c)].width = 11
-    ws.column_dimensions[get_column_letter(c_map)].width = 16
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["K"].width = 8
+    ws.column_dimensions["L"].width = 16
+    ws.column_dimensions[get_column_letter(c_map)].width = 18
+    for j, width in enumerate((8, 8, 14, 22, 12, 12, 12, 12, 12, 12)):
+        ws.column_dimensions[get_column_letter(fact_col + j)].width = width
+    ws.auto_filter.ref = f"{get_column_letter(fact_col)}4:{get_column_letter(fact_col + 9)}{4 + max(len(facts), 1)}"
     ws.sheet_view.showGridLines = False
+    ws.sheet_view.zoomScale = 100
+    ws.sheet_properties.tabColor = "FFC000"
     wb.active = ws
     wb.save(path)
     wb.close()

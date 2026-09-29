@@ -1,12 +1,16 @@
 
+
+from __future__ import annotations
+
+
 def _publish_out(name: str):
     from pathlib import Path
-    dest = Path(__file__).resolve().parents[2] / "out" / name
+    p = Path(__file__).resolve().parent
+    while p != p.parent and not (p / ".git").is_dir():
+        p = p.parent
+    dest = p / "out" / name
     dest.parent.mkdir(parents=True, exist_ok=True)
     return dest
-
-# results.py — 只写「覆盖率结果」Sheet
-from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
@@ -18,7 +22,6 @@ from 场景覆盖 import config as cfg
 
 _THIN = Side(style="thin", color="B0B0B0")
 _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
-
 
 def _rel_fill(value: float, dim: str = "流派") -> Optional[PatternFill]:
     """指数 (~1.0) → PASS/WARN/FAIL 填色。"""
@@ -33,7 +36,6 @@ def _rel_fill(value: float, dim: str = "流派") -> Optional[PatternFill]:
         return cfg.FILL_WARN
     return cfg.FILL_FAIL
 
-
 def _fill_row_rel(value: float, row_vals: List[float], dim: str, invert: bool = False) -> PatternFill:
     """行内相对均值填色：rel = v / 行均值（1.0 = 该行维内均值）。
 
@@ -47,7 +49,6 @@ def _fill_row_rel(value: float, row_vals: List[float], dim: str, invert: bool = 
         rel = 2.0 - rel
     return _rel_fill(rel, dim)
 
-
 def _share_fill(value: float) -> Optional[PatternFill]:
     """场景占比热力；过小不着色。"""
     if value <= 0:
@@ -57,12 +58,10 @@ def _share_fill(value: float) -> Optional[PatternFill]:
             return fill
     return cfg.FILL_SHARE_4
 
-
 def _apply_border(ws, r1: int, c1: int, r2: int, c2: int) -> None:
     for r in range(r1, r2 + 1):
         for c in range(c1, c2 + 1):
             ws.cell(row=r, column=c).border = _BORDER
-
 
 def write_results(
     framework_path: str,

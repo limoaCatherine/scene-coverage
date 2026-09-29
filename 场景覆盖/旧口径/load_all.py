@@ -18,8 +18,8 @@ from .builds import (
     compose_level_build_meta,
     derive_pvp_env_distributions,
 )
-from .matrices import read_all_matrices
-from .layout_v2 import find_block
+from 场景覆盖.load.matrices import read_all_matrices
+from 场景覆盖.load.layout_v2 import find_block
 
 
 def _is_scene_v2(ws) -> bool:

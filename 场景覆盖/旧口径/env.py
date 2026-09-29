@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from 场景覆盖 import config as cfg
-from .matrix_ops import normalize_dist, to_ndarray
+from 场景覆盖.calc.matrix_ops import normalize_dist, to_ndarray
 
 
 @dataclass

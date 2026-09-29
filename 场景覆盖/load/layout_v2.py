@@ -8,12 +8,26 @@ import numpy as np
 
 from 场景覆盖 import config as cfg
 from 场景覆盖.config import ConfigDriftError
-from .scenes import _safe_float
+
+
+def _safe_float(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if value is None:
+        raise ConfigDriftError("数值为空")
+    s = str(value).strip().rstrip("%")
+    if not s or s.startswith("#"):
+        raise ConfigDriftError(f"数值无效: {value}")
+    try:
+        return float(s)
+    except ValueError as e:
+        raise ConfigDriftError(f"数值无效: {value}") from e
 
 
 LEVELS = list(range(1, 61))
-BLOCK_NAMES = ("等级", "玩法", "地图", "遭遇", "偏好", "权重校验", "流派三维")
-ATTRS = ["无属性", "火属性", "水属性", "风属性", "地属性", "毒属性", "圣属性", "暗属性", "念属性", "不死属性"]
+BLOCK_NAMES = ("等级", "玩法", "地图", "遭遇", "偏好", "流派三维")
+SKIP_HEADERS = {"", "合计", "校验", "校验和"}
+ATTRS = ["无元素", "火元素", "水元素", "风元素", "地元素", "毒元素", "圣元素", "暗元素", "念元素", "不死元素"]
 RACES = ["人形", "动物", "植物", "昆虫", "鱼贝", "恶魔", "天使", "龙", "不死", "无形"]
 SIZES = ["小体型", "中体型", "大体型"]
 
@@ -119,6 +133,11 @@ def read_maps_and_encounters(ws) -> dict:
     c_name = _header_col(ws, sm, em, "地图")
     c_pw = _header_col(ws, sm, em, "玩法")
     c_lv = _header_col(ws, sm, em, "等级")
+    c_w = None
+    for c in range(sm, em + 1):
+        if str(ws.cell(4, c).value or "").strip() == "地图权重":
+            c_w = c
+            break
     attr_cols = [_header_col(ws, se, ee, a) for a in ATTRS]
     race_cols = [_header_col(ws, se, ee, a) for a in RACES]
     size_cols = [_header_col(ws, se, ee, a) for a in SIZES]
@@ -128,7 +147,10 @@ def read_maps_and_encounters(ws) -> dict:
         name = str(name).strip()
         pw = str(ws.cell(r, c_pw).value or "").strip()
         lv = int(float(ws.cell(r, c_lv).value))
-        maps.append({"name": name, "playway": pw, "level": lv, "row": r})
+        weight = 1.0
+        if c_w is not None and not _blank(ws.cell(r, c_w).value):
+            weight = _safe_float(ws.cell(r, c_w).value)
+        maps.append({"name": name, "playway": pw, "level": lv, "weight": weight, "row": r})
         try:
             attr = np.array([_safe_float(ws.cell(r, c).value) for c in attr_cols], dtype=float)
             race = np.array([_safe_float(ws.cell(r, c).value) for c in race_cols], dtype=float)
@@ -159,7 +181,7 @@ def read_prefs(ws) -> dict:
     builds = []
     for c in range(s + 1, e + 1):
         h = ws.cell(4, c).value
-        if h is None or str(h).strip() in {"", "合计", "校验"}:
+        if h is None or str(h).strip() in SKIP_HEADERS:
             continue
         builds.append((c, str(h).strip()))
     if not builds:
@@ -213,13 +235,34 @@ def compose_weights(levels_blk: dict, play: dict, prefs: dict) -> dict:
     return {"cube": cube, "builds": builds, "play_names": names}
 
 
-def compose_pve_config(play: dict, maps_enc: dict, levels_blk: dict) -> dict:
-    """每等级：玩法份额×PVE% 均摊到该玩法地图的遭遇三维。"""
-    shares = play["shares"]
-    pve = {p["name"]: p["pve"] for p in play["playways"]}
+def _maps_by_play(maps_enc: dict) -> dict:
     by_pw = defaultdict(list)
     for m in maps_enc["maps"]:
         by_pw[m["playway"]].append(m)
+    return by_pw
+
+
+def active_tier(group: list, lv: int) -> list[tuple[dict, float]]:
+    """当前档：不超过该级的最高地图等级。该级还没有任何地图时，用该玩法最早的一档。"""
+    if not group:
+        return []
+    avail = [m for m in group if int(m["level"]) <= int(lv)]
+    if avail:
+        top = max(int(m["level"]) for m in avail)
+        tier = [m for m in avail if int(m["level"]) == top]
+    else:
+        top = min(int(m["level"]) for m in group)
+        tier = [m for m in group if int(m["level"]) == top]
+    raw = [float(m.get("weight") or 1.0) for m in tier]
+    total = sum(raw) or 1.0
+    return [(m, raw[i] / total) for i, m in enumerate(tier)]
+
+
+def compose_pve_config(play: dict, maps_enc: dict, levels_blk: dict) -> dict:
+    """每等级只混入该玩法当前档地图，再按 PVE% 给权重。"""
+    shares = play["shares"]
+    pve = {p["name"]: p["pve"] for p in play["playways"]}
+    by_pw = _maps_by_play(maps_enc)
     pve_config = {}
     for lv in LEVELS:
         rows = []
@@ -228,17 +271,17 @@ def compose_pve_config(play: dict, maps_enc: dict, levels_blk: dict) -> dict:
             w = levels_blk["value"][lv] * shares[n][lv] * pve[n]
             if w <= cfg.PROGRAM_EPS:
                 continue
-            maps = by_pw.get(n) or []
-            if not maps:
+            tier = active_tier(by_pw.get(n) or [], lv)
+            if not tier:
                 continue
-            part = w / len(maps)
-            for m in maps:
+            for m, frac in tier:
                 enc = maps_enc["encounters"][m["name"]]
                 rows.append({
-                    "name": f"{n}-{m['name']}",
+                    "name": m["name"],
                     "type": n,
                     "level": lv,
-                    "weight": part,
+                    "map_level": int(m["level"]),
+                    "weight": w * frac,
                     "attr": enc["attr"].copy(),
                     "race": enc["race"].copy(),
                     "size": enc["size"].copy(),
@@ -259,7 +302,7 @@ def read_spec3_panel(ws) -> dict:
         if h is None:
             continue
         name = str(h).strip()
-        if name in {"大类", "小类", ""}:
+        if name in {"大类", "小类", ""} or name in SKIP_HEADERS:
             continue
         builds.append((c, name))
     if not builds:
